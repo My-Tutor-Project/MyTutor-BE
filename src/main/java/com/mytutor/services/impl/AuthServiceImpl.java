@@ -16,12 +16,15 @@ import com.mytutor.services.AuthService;
 import java.net.URI;
 import java.util.Date;
 
+import com.mytutor.utils.Validator;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.Valid;
 import org.modelmapper.ModelMapper;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -38,11 +41,10 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 import java.util.Map;
 
 /**
- *
  * @author Nguyen Van Dat
  */
 @Service
- public class AuthServiceImpl implements AuthService {
+public class AuthServiceImpl implements AuthService {
 
     @Autowired
     private AccountRepository accountRepository;
@@ -54,9 +56,6 @@ import java.util.Map;
     private SecurityUtil securityUtil;
 
     @Autowired
-    private CustomUserDetailsService userDetailsService;
-
-    @Autowired
     private AuthenticationManager authenticationManager;
 
     @Autowired
@@ -65,35 +64,36 @@ import java.util.Map;
     @Autowired
     private OtpService otpService;
 
-    private static final String URL_CLIENT = "http://localhost:5173";
-
     @Override
     public ResponseEntity<?> login(LoginDto loginDto) {
-        try {
+        Validator.validateEmail(loginDto.getEmail());
+        Validator.validatePassword(loginDto.getPassword());
+        // Authenticate username(email) and password
+        Authentication authentication = authenticationManager.authenticate(
+                new UsernamePasswordAuthenticationToken(
+                        loginDto.getEmail(),
+                        loginDto.getPassword()));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
 
-            // Authenticate username(email) and password
-            Authentication authentication = authenticationManager.authenticate(
-                    new UsernamePasswordAuthenticationToken(
-                            loginDto.getEmail(),
-                            loginDto.getPassword()));
-            SecurityContextHolder.getContext().setAuthentication(authentication);
+        // Generate JWT after authentication succeed
+        String token = securityUtil.createToken(authentication);
 
-            // Generate JWT after authentication succeed
-            String token = securityUtil.createToken(authentication);
-
-            // Response ACCESS TOKEN and EXPIRATION TIME
-            AuthenticationResponseDto authenticationResponseDto = new AuthenticationResponseDto(token);
-
-            return new ResponseEntity<>(authenticationResponseDto, HttpStatus.OK);
-        } catch (AuthenticationException e) {
-
-            // If Authentication failed
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Authentication failed: " + e.getMessage());
+        if (token == null) {
+            throw new BadCredentialsException("Can not create JWT");
         }
+
+        // Response ACCESS TOKEN and EXPIRATION TIME
+        AuthenticationResponseDto authenticationResponseDto = new AuthenticationResponseDto(token);
+
+        return new ResponseEntity<>(authenticationResponseDto, HttpStatus.OK);
     }
 
     @Override
     public ResponseEntity<?> register(RegisterDto registerDto) {
+        Validator.validateEmail(registerDto.getEmail());
+        Validator.validateFullName(registerDto.getFullName());
+        Validator.validatePhoneNumber(registerDto.getPhoneNumber());
+        Validator.validatePassword(registerDto.getPassword());
 
         if (accountRepository.existsByEmail(registerDto.getEmail())) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("This email has been used");
@@ -158,28 +158,15 @@ import java.util.Map;
         }
 
         if (account.getStatus().equals(AccountStatus.BANNED)) {
-            //Create uri with token for redirect
-            String url = URL_CLIENT + "/" + "?success=false&message=You%20are%20banned";
-            URI uri = URI.create(url);
-
-            return ResponseEntity.status(HttpStatus.FOUND).location(uri).build();
+            return ResponseEntity.status(HttpStatus.FOUND).build();
         }
 
         // Generate JWT after authentication succeed
         String token = securityUtil.createToken(oAuth2AuthenticationToken);
 
-        //Create uri with token for redirect
-        String url = URL_CLIENT + "/" + "?success=true&accessToken=" + token;
-        URI uri = URI.create(url);
+        AuthenticationResponseDto authenticationResponseDto = new AuthenticationResponseDto(token);
 
-        // REMOVE JSESSIONID
-        HttpServletResponse response = ((ServletRequestAttributes) RequestContextHolder.getRequestAttributes()).getResponse();
-        Cookie cookie = new Cookie("JSESSIONID", "");
-        cookie.setMaxAge(0);
-        cookie.setPath("/");
-        response.addCookie(cookie);
-
-        return ResponseEntity.status(HttpStatus.FOUND).location(uri).build();
+        return ResponseEntity.status(HttpStatus.FOUND).body(authenticationResponseDto);
     }
 
     @Override
@@ -188,9 +175,9 @@ import java.util.Map;
         Account account = accountRepository.findByEmail(email).orElseThrow(() -> new AccountNotFoundException("Account not found"));
 
         otpService.sendOtp(account.getEmail());
-        
+
         AccountResponse accountResponse = new AccountResponse(account.getEmail(), "FORGOT_PASSWORD");
-        
+
         return ResponseEntity.status(HttpStatus.OK).body(accountResponse);
     }
 
@@ -208,5 +195,6 @@ import java.util.Map;
         return ResponseEntity.status(HttpStatus.OK).body("Reset password successfully!");
     }
 
-    private record AccountResponse(String email, String status) {}
+    private record AccountResponse(String email, String status) {
+    }
 }
